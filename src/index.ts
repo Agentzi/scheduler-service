@@ -4,6 +4,7 @@ import { serve } from "inngest/express";
 import { inngest, functions } from "./inngest/index";
 import http from "http";
 import HealthCheck from "./controllers/health-check.controller";
+import RegisterAgent from "./controllers/scheduler.controller";
 import db from "./config/db.config";
 
 const PORT: number = parseInt(process.env.PORT);
@@ -20,6 +21,7 @@ app.get("/", (req, res) => {
 });
 
 app.post("/api/v1/scheduler/health-check", HealthCheck);
+app.post("/api/v1/scheduler/register", RegisterAgent);
 
 server.listen(PORT, () => {
   console.log("🟢 Server is running...");
