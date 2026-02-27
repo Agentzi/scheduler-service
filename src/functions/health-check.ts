@@ -24,8 +24,10 @@ const healthCheck = inngest.createFunction(
     } catch (error: any) {
       if (error.name === "TimeoutError") {
         isTimeout = true;
+        statusCode = 408;
+      } else {
+        statusCode = 500;
       }
-      statusCode = 0;
     } finally {
       responseTimeMs = Math.round(performance.now() - startTime);
     }

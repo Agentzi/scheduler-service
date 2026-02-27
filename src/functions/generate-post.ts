@@ -1,5 +1,5 @@
 import { inngest } from "../inngest/client";
-import { invokeTable } from "@agentzi/db";
+import { invokeTable, healthTable } from "@agentzi/db";
 import db from "../config/db.config";
 
 const API_GATEWAY_URL = process.env.API_GATEWAY_URL;
@@ -21,10 +21,13 @@ const generatePost = inngest.createFunction(
      * @description Health check with retry before invoking the agent.
      * Attempts up to MAX_HEALTH_RETRIES times. Throws if all attempts fail.
      */
-    await step.run("health-check-with-retry", async () => {
+    const healthResult = await step.run("health-check-with-retry", async () => {
+      const startTime = performance.now();
+      let lastStatusCode = 0;
+
       for (
         let attempt = 1;
-        attempt <= Number(process.env.MAX_HEALTH_RETRIES);
+        attempt <= Number(process.env.MAX_HEALTH_RETRIES || 4);
         attempt++
       ) {
         try {
@@ -32,44 +35,90 @@ const generatePost = inngest.createFunction(
             signal: AbortSignal.timeout(10000),
           });
 
-          if (response.ok) {
-            return { status: "healthy", attempt };
-          }
-        } catch {}
+          lastStatusCode = response.status;
 
-        if (attempt < Number(process.env.MAX_HEALTH_RETRIES)) {
+          if (response.ok) {
+            return {
+              status: "healthy",
+              attempt,
+              statusCode: response.status,
+              responseTimeMs: Math.round(performance.now() - startTime),
+            };
+          }
+        } catch (error: any) {
+          lastStatusCode = error.name === "TimeoutError" ? 408 : 500;
+        }
+
+        if (attempt < Number(process.env.MAX_HEALTH_RETRIES || 4)) {
           await new Promise((resolve) => setTimeout(resolve, 2000));
         }
       }
 
-      throw new Error(
-        `Agent ${agent_id} health check failed after ${Number(process.env.MAX_HEALTH_RETRIES)} attempts`,
-      );
+      return {
+        status: "failed",
+        statusCode: lastStatusCode,
+        responseTimeMs: Math.round(performance.now() - startTime),
+      };
     });
+
+    await step.run("record-health-status", async () => {
+      await db.insert(healthTable).values({
+        agent_id: event.data.agent_id,
+        status_code: healthResult.statusCode.toString(),
+        response_time_ms: healthResult.responseTimeMs.toString(),
+      });
+    });
+
+    if (healthResult.status === "failed") {
+      return {
+        success: false,
+        message: `Agent ${agent_id} health check failed, stopping generatePost.`,
+      };
+    }
 
     /**
      * @description This function is used to generate post content.
      */
     const invokeResult = await step.run("call-agent-generate", async () => {
       const startTime = performance.now();
-      const response = await fetch(`${base_url}/invoke`, {
-        method: "GET",
-        headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(60000),
-      });
-      const responseTimeMs = Math.round(performance.now() - startTime);
+      let statusCode = 0;
+      let responseTimeMs = 0;
 
-      if (!response.ok) {
-        throw new Error(`Agent responded with status ${response.status}`);
+      try {
+        const response = await fetch(`${base_url}/invoke`, {
+          method: "GET",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(60000),
+        });
+
+        statusCode = response.status;
+        responseTimeMs = Math.round(performance.now() - startTime);
+
+        if (!response.ok) {
+          return {
+            status: "failed",
+            _statusCode: statusCode,
+            _responseTimeMs: responseTimeMs,
+          };
+        }
+
+        const content = await response.json();
+
+        return {
+          status: "success",
+          ...content,
+          _statusCode: statusCode,
+          _responseTimeMs: responseTimeMs,
+        };
+      } catch (error: any) {
+        responseTimeMs = Math.round(performance.now() - startTime);
+        return {
+          status: "failed",
+          _statusCode: error.name === "TimeoutError" ? 408 : 500,
+          _responseTimeMs: responseTimeMs,
+          error: error.message,
+        };
       }
-
-      const content = await response.json();
-
-      return {
-        ...content,
-        _statusCode: response.status,
-        _responseTimeMs: responseTimeMs,
-      };
     });
 
     /**
@@ -82,6 +131,13 @@ const generatePost = inngest.createFunction(
         response_time_ms: invokeResult._responseTimeMs.toString(),
       });
     });
+
+    if (invokeResult.status === "failed") {
+      return {
+        success: false,
+        message: `Agent ${agent_id} generate invocation failed, stopping generatePost.`,
+      };
+    }
 
     /**
      * @description This function is used to post the generated content to the feed-service
