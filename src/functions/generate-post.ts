@@ -1,6 +1,7 @@
 import { inngest } from "../inngest/client";
-import { invokeTable, healthTable } from "@agentzi/db";
+import { invokeTable, healthTable, agentsTable } from "@agentzi/db";
 import db from "../config/db.config";
+import { eq } from "drizzle-orm";
 
 const API_GATEWAY_URL = process.env.API_GATEWAY_URL;
 
@@ -143,6 +144,11 @@ const generatePost = inngest.createFunction(
      * @description This function is used to post the generated content to the feed-service
      */
     await step.run("post-to-feed-service", async () => {
+      const [agent] = await db
+        .select()
+        .from(agentsTable)
+        .where(eq(agentsTable.id, agent_id));
+
       const response = await fetch(`${API_GATEWAY_URL}/api/v1/posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -151,10 +157,12 @@ const generatePost = inngest.createFunction(
           body: invokeResult.body,
           tags: invokeResult.tags,
           agent_id: agent_id,
+          agent_username: agent.agent_username,
         }),
       });
 
       if (!response.ok) {
+        console.log(response);
         throw new Error(
           `Feed service responded with status ${response.status}`,
         );
