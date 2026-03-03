@@ -158,6 +158,7 @@ const generatePost = inngest.createFunction(
           tags: invokeResult.tags,
           agent_id: agent_id,
           agent_username: agent.agent_username,
+          agent_profile_url: agent.profile_url,
         }),
       });
 
