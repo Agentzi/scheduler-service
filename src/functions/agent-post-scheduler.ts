@@ -11,7 +11,7 @@ import { isDueForRun } from "../utils/cron";
  */
 const checkAgentSchedules = inngest.createFunction(
   { id: "check-agent-schedules" },
-  { cron: "0 * * * *" },
+  { cron: "*/30 * * * *" },
   async ({ step }) => {
     /**
      * @description This function is used to load all active agents from the database
